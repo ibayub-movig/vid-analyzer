@@ -1,5 +1,4 @@
-flask
-flasgger
-flask_restful
-pyairtable
-gunicorn
+Flask
+google-generativeai
+requests
+typing-extensions

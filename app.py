@@ -1,137 +1,97 @@
-from flask import Flask, jsonify, request
-from flask_restful import Api, Resource
-from flasgger import Swagger
+from flask import Flask, request, jsonify
+import google.generativeai as genai
+import requests
+import time
+from typing_extensions import TypedDict
+from typing import List
+import os
 
-import book_review
+# Define the schema for the response
+class VideoAnalysis(TypedDict):
+    description: str
+    content_areas: List[str]
+    brand: str
+    length: str
+    ugc_type: str
 
 app = Flask(__name__)
-api = Api(app)
-swagger = Swagger(app)
 
-class UppercaseText(Resource):
-    def get(self):
-        """
-        This method responds to the GET request for this endpoint and returns the data in uppercase.
-        ---
-        tags:
-        - Text Processing
-        parameters:
-            - name: text
-              in: query
-              type: string
-              required: true
-              description: The text to be converted to uppercase
-        responses:
-            200:
-                description: A successful GET request
-                content:
-                    application/json:
-                      schema:
-                        type: object
-                        properties:
-                            text:
-                                type: string
-                                description: The text in uppercase
-        """
-        text = request.args.get('text')
+@app.route("/analyze_video", methods=["POST"])
+def analyze_video():
+    """
+    Analyzes a video and generates structured output using Generative AI.
+    """
+    try:
+        # Parse JSON input
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "Invalid JSON input"}), 400
 
-        return jsonify({"text": text.upper()})
-    
-class Records(Resource):
-    def get(self):
-        """
-        This method responds to the GET request for returning a number of books.
-        ---
-        tags:
-        - Records
-        parameters:
-            - name: count
-              in: query
-              type: integer
-              required: false
-              description: The number of books to return
-            - name: sort
-              in: query
-              type: string
-              enum: ['ASC', 'DESC']
-              required: false
-              description: Sort order for the books
-        responses:
-            200:
-                description: A successful GET request
-                schema:
-                    type: object
-                    properties:
-                        books:
-                            type: array
-                            items:
-                                type: object
-                                properties:
-                                    title:
-                                        type: string
-                                        description: The title of the book
-                                    author:
-                                        type: string
-                                        description: The author of the book
+        # Extract required fields
+        api_key = data.get("api_key")
+        video_url = data.get("video_url")
+        video_name = data.get("video_name")
+        if not api_key or not video_url or not video_name:
+            return jsonify({"error": "api_key, video_url, and video_name are required"}), 400
+
+        # Configure Generative AI API
+        genai.configure(api_key=api_key)
+
+        # Download the video file
+        print(f"Downloading video from {video_url}...")
+        response = requests.get(video_url, stream=True)
+        if response.status_code != 200:
+            return jsonify({"error": "Failed to download video"}), 400
+
+        video_path = os.path.join("video_files", video_name)
+        with open(video_path, "wb") as video_file:
+            for chunk in response.iter_content(chunk_size=1024):
+                video_file.write(chunk)
+        print("Video downloaded successfully.")
+
+        # Upload the video to Generative AI
+        print("Uploading video...")
+        video_file = genai.upload_file(path=video_path)
+
+        # Wait for file processing
+        while video_file.state.name == "PROCESSING":
+            print("Processing video...")
+            time.sleep(10)
+            video_file = genai.get_file(video_file.name)
+
+        if video_file.state.name == "FAILED":
+            return jsonify({"error": "Video processing failed"}), 500
+
+        # Define the prompt
+        prompt = """
+        Analyze the provided UGC video and extract the following details:
+        - Description: A brief summary of the content.
+        - Content Areas: Choose one or more from [Health, Beauty, Fitness, Other].
+        - Brand: The associated brand, if any.
+        - Length: Approximate video duration.
+        - UGC Type: Classify the content type (e.g., review, tutorial, lifestyle, etc.).
         """
 
-        count = request.args.get('count')  # Default to returning 10 books if count is not provided
-        sort = request.args.get('sort')
+        # Generate content
+        print("Generating analysis...")
+        model = genai.GenerativeModel("gemini-1.5-pro-latest")
+        result = model.generate_content(
+            prompt,
+            generation_config=genai.GenerationConfig(
+                response_mime_type="application/json",
+                response_schema=VideoAnalysis
+            ),
+            request_options={"timeout": 600}
+        )
+        print("Analysis completed successfully.")
+        return jsonify(result)
 
-        # Get all the books
-        books = book_review.get_all_records(count=count, sort=sort)
-
-        return {"books": books}, 200
-    
-class AddRecord(Resource):
-    def post(self):
-        """
-        This method responds to the POST request for adding a new record to the DB table.
-        ---
-        tags:
-        - Records
-        parameters:
-            - in: body
-              name: body
-              required: true
-              schema:
-                id: BookReview
-                required:
-                  - Book
-                  - Rating
-                properties:
-                  Book:
-                    type: string
-                    description: the name of the book
-                  Rating:
-                    type: integer
-                    description: the rating of the book (1-10)
-        responses:
-            200:
-                description: A successful POST request
-            400: 
-                description: Bad request, missing 'Book' or 'Rating' in the request body
-        """
-
-        data = request.json
-        print(data)
-
-        # Check if 'Book' and 'Rating' are present in the request body
-        if 'Book' not in data or 'Rating' not in data:
-            return {"message": "Bad request, missing 'Book' or 'Rating' in the request body"}, 400
-        # Call the add_record function to add the record to the DB table
-        success = book_review.add_record(data)
-
-        if success:
-            return {"message": "Record added successfully"}, 200
-        else:
-            return {"message": "Failed to add record"}, 500
-        
-
-
-api.add_resource(AddRecord, "/add-record")
-api.add_resource(Records, "/records")
-api.add_resource(UppercaseText, "/uppercase")
+    except Exception as e:
+        print(f"Error: {e}")
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    # Ensure video_files directory exists
+    os.makedirs("video_files", exist_ok=True)
+
+    app.run(debug=True, port=5000)
