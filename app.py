@@ -1,7 +1,8 @@
 from flask import Flask, request, jsonify
 import google.generativeai as genai
-import requests
+import os
 import time
+import requests
 from typing_extensions import TypedDict
 from typing import List
 
@@ -18,7 +19,7 @@ app = Flask(__name__)
 @app.route("/analyze_video", methods=["POST"])
 def analyze_video():
     """
-    Analyzes a video by downloading it from a provided URL and generating structured output using Generative AI.
+    Analyzes a video by downloading it using Python requests and generating structured output using Generative AI.
     """
     try:
         # Parse the JSON input
@@ -36,18 +37,28 @@ def analyze_video():
         # Configure Generative AI API
         genai.configure(api_key=api_key)
 
-        # Download the video file
+        # Download the video file using requests
         print(f"Downloading video from {video_url}...")
         response = requests.get(video_url, stream=True)
         if response.status_code != 200:
-            return jsonify({"error": "Failed to download video"}), 400
+            return jsonify({"error": f"Failed to download video from {video_url}"}), 400
 
-        # Upload the video to Generative AI
-        video_file = genai.upload_file(path_or_stream=response.raw, filename=video_name)
+        # Save the video locally
+        with open(video_name, "wb") as video_file:
+            for chunk in response.iter_content(chunk_size=1024):
+                if chunk:
+                    video_file.write(chunk)
+
+        print(f"Video downloaded: {video_name}")
+
+        # Upload the video file to Generative AI
+        print("Uploading file to Generative AI...")
+        video_file = genai.upload_file(path=video_name)
+        print(f"Completed upload: {video_file.uri}")
 
         # Wait for file processing to complete
         while video_file.state.name == "PROCESSING":
-            print("Processing video...")
+            print('.', end='', flush=True)
             time.sleep(10)
             video_file = genai.get_file(video_file.name)
 
@@ -75,6 +86,10 @@ def analyze_video():
             ),
             request_options={"timeout": 600}  # Ensure sufficient timeout
         )
+
+        # Clean up the downloaded video file
+        os.remove(video_name)
+        print(f"Temporary file {video_name} removed.")
 
         # Return the structured analysis result
         print("Analysis completed successfully.")
