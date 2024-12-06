@@ -4,7 +4,6 @@ import requests
 import time
 from typing_extensions import TypedDict
 from typing import List
-import os
 
 # Define the schema for the response
 class VideoAnalysis(TypedDict):
@@ -19,15 +18,15 @@ app = Flask(__name__)
 @app.route("/analyze_video", methods=["POST"])
 def analyze_video():
     """
-    Analyzes a video and generates structured output using Generative AI.
+    Analyzes a video by downloading it from a provided URL and generating structured output using Generative AI.
     """
     try:
-        # Parse JSON input
+        # Parse the JSON input
         data = request.get_json()
         if not data:
             return jsonify({"error": "Invalid JSON input"}), 400
 
-        # Extract required fields
+        # Extract required fields from the input
         api_key = data.get("api_key")
         video_url = data.get("video_url")
         video_name = data.get("video_name")
@@ -43,17 +42,10 @@ def analyze_video():
         if response.status_code != 200:
             return jsonify({"error": "Failed to download video"}), 400
 
-        video_path = os.path.join("video_files", video_name)
-        with open(video_path, "wb") as video_file:
-            for chunk in response.iter_content(chunk_size=1024):
-                video_file.write(chunk)
-        print("Video downloaded successfully.")
-
         # Upload the video to Generative AI
-        print("Uploading video...")
-        video_file = genai.upload_file(path=video_path)
+        video_file = genai.upload_file(path_or_stream=response.raw, filename=video_name)
 
-        # Wait for file processing
+        # Wait for file processing to complete
         while video_file.state.name == "PROCESSING":
             print("Processing video...")
             time.sleep(10)
@@ -72,7 +64,7 @@ def analyze_video():
         - UGC Type: Classify the content type (e.g., review, tutorial, lifestyle, etc.).
         """
 
-        # Generate content
+        # Generate content using Generative AI
         print("Generating analysis...")
         model = genai.GenerativeModel("gemini-1.5-pro-latest")
         result = model.generate_content(
@@ -81,8 +73,10 @@ def analyze_video():
                 response_mime_type="application/json",
                 response_schema=VideoAnalysis
             ),
-            request_options={"timeout": 600}
+            request_options={"timeout": 600}  # Ensure sufficient timeout
         )
+
+        # Return the structured analysis result
         print("Analysis completed successfully.")
         return jsonify(result)
 
@@ -91,7 +85,4 @@ def analyze_video():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    # Ensure video_files directory exists
-    os.makedirs("video_files", exist_ok=True)
-
     app.run(debug=True, port=5000)
